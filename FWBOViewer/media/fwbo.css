@@ -178,7 +178,6 @@ svg {
     width: 100%;
     height: 100%;
     cursor: grab;
-    will-change: viewBox;
 }
 
 svg:active {
@@ -591,4 +590,62 @@ svg:active {
     height: 1px;
     background: linear-gradient(90deg, transparent, #e2e8f0, transparent);
     margin: 4px 0;
+}
+
+/* Custom Scrollbar Indicators for SVG viewport */
+.custom-scrollbar {
+    position: absolute;
+    z-index: 500;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.05);
+    opacity: 0.6;
+}
+
+.custom-scrollbar:hover {
+    opacity: 1;
+}
+
+.custom-scrollbar-h {
+    bottom: 2px;
+    left: 2px;
+    right: 16px;
+    height: 14px;
+    cursor: pointer;
+}
+
+.custom-scrollbar-v {
+    right: 2px;
+    top: 2px;
+    bottom: 16px;
+    width: 14px;
+    cursor: pointer;
+}
+
+.custom-scrollbar-thumb {
+    position: absolute;
+    left: 0;
+    top: 0;
+    border-radius: 4px;
+    background: rgba(0, 120, 212, 0.4);
+    cursor: grab;
+    will-change: transform;
+}
+
+.custom-scrollbar-thumb:hover {
+    background: rgba(0, 120, 212, 0.6);
+}
+
+.custom-scrollbar-thumb:active {
+    background: rgba(0, 120, 212, 0.8);
+    cursor: grabbing;
+}
+
+.custom-scrollbar-h .custom-scrollbar-thumb {
+    height: 100%;
+    min-width: 30px;
+}
+
+.custom-scrollbar-v .custom-scrollbar-thumb {
+    width: 100%;
+    min-height: 30px;
 }

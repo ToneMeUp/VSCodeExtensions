@@ -71,7 +71,157 @@
         svg.appendChild(connectorsGroup);
 
         let currentViewBox = { x: minX, y: minY, width: svgWidth, height: svgHeight };
-        
+        const fullBounds = { x: minX, y: minY, width: svgWidth, height: svgHeight };
+
+        // Clamp viewBox so you can't scroll past the content
+        function clampViewBox(vb) {
+            const margin = 0.25;
+            const marginW = vb.width * margin;
+            const marginH = vb.height * margin;
+            vb.x = Math.max(fullBounds.x - marginW, Math.min(fullBounds.x + fullBounds.width - vb.width + marginW, vb.x));
+            vb.y = Math.max(fullBounds.y - marginH, Math.min(fullBounds.y + fullBounds.height - vb.height + marginH, vb.y));
+        }
+
+        // --- Custom Scrollbar Indicators ---
+        const hBar = document.createElement('div');
+        hBar.className = 'custom-scrollbar custom-scrollbar-h';
+        const hThumb = document.createElement('div');
+        hThumb.className = 'custom-scrollbar-thumb';
+        hBar.appendChild(hThumb);
+
+        const vBar = document.createElement('div');
+        vBar.className = 'custom-scrollbar custom-scrollbar-v';
+        const vThumb = document.createElement('div');
+        vThumb.className = 'custom-scrollbar-thumb';
+        vBar.appendChild(vThumb);
+
+        container.appendChild(hBar);
+        container.appendChild(vBar);
+
+        // --- Scrollbar drag interaction ---
+        let scrollDrag = null;
+        let scrollRafId = null;
+
+        function onScrollThumbDown(axis, e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const thumb = axis === 'h' ? hThumb : vThumb;
+            const bar = axis === 'h' ? hBar : vBar;
+            const barRect = bar.getBoundingClientRect();
+            const thumbRect = thumb.getBoundingClientRect();
+            const currentThumbPx = axis === 'h'
+                ? thumbRect.left - barRect.left
+                : thumbRect.top - barRect.top;
+            const thumbSize = axis === 'h' ? thumbRect.width : thumbRect.height;
+            const barSize = axis === 'h' ? barRect.width : barRect.height;
+
+            scrollDrag = {
+                axis,
+                startMouse: axis === 'h' ? e.clientX : e.clientY,
+                startThumbPx: currentThumbPx,
+                thumbSize,
+                barSize,
+                svgPerPx: (axis === 'h' ? fullBounds.width : fullBounds.height) / barSize,
+                startVbPos: axis === 'h' ? currentViewBox.x : currentViewBox.y,
+            };
+            document.body.style.userSelect = 'none';
+        }
+
+        hThumb.addEventListener('mousedown', (e) => onScrollThumbDown('h', e));
+        vThumb.addEventListener('mousedown', (e) => onScrollThumbDown('v', e));
+
+        window.addEventListener('mousemove', (e) => {
+            if (!scrollDrag) return;
+            e.preventDefault();
+            const d = scrollDrag;
+            const mouseNow = d.axis === 'h' ? e.clientX : e.clientY;
+            const mouseDelta = mouseNow - d.startMouse;
+
+            const maxTravel = d.barSize - d.thumbSize;
+            const newThumbPx = Math.max(0, Math.min(maxTravel, d.startThumbPx + mouseDelta));
+            const thumb = d.axis === 'h' ? hThumb : vThumb;
+            if (d.axis === 'h') {
+                thumb.style.transform = `translate3d(${newThumbPx}px,0,0)`;
+            } else {
+                thumb.style.transform = `translate3d(0,${newThumbPx}px,0)`;
+            }
+
+            if (d.axis === 'h') {
+                currentViewBox.x = d.startVbPos + mouseDelta * d.svgPerPx;
+            } else {
+                currentViewBox.y = d.startVbPos + mouseDelta * d.svgPerPx;
+            }
+            clampViewBox(currentViewBox);
+
+            if (scrollRafId) cancelAnimationFrame(scrollRafId);
+            scrollRafId = requestAnimationFrame(() => {
+                svg.setAttribute('viewBox', `${currentViewBox.x} ${currentViewBox.y} ${currentViewBox.width} ${currentViewBox.height}`);
+                scrollRafId = null;
+            });
+        });
+
+        // --- Scrollbar click-to-jump on track ---
+        hBar.addEventListener('mousedown', (e) => {
+            if (e.target === hThumb) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const barRect = hBar.getBoundingClientRect();
+            const ratio = (e.clientX - barRect.left) / barRect.width;
+            currentViewBox.x = fullBounds.x + ratio * fullBounds.width - currentViewBox.width / 2;
+            clampViewBox(currentViewBox);
+            svg.setAttribute('viewBox', `${currentViewBox.x} ${currentViewBox.y} ${currentViewBox.width} ${currentViewBox.height}`);
+            updateScrollbars();
+        });
+
+        vBar.addEventListener('mousedown', (e) => {
+            if (e.target === vThumb) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const barRect = vBar.getBoundingClientRect();
+            const ratio = (e.clientY - barRect.top) / barRect.height;
+            currentViewBox.y = fullBounds.y + ratio * fullBounds.height - currentViewBox.height / 2;
+            clampViewBox(currentViewBox);
+            svg.setAttribute('viewBox', `${currentViewBox.x} ${currentViewBox.y} ${currentViewBox.width} ${currentViewBox.height}`);
+            updateScrollbars();
+        });
+
+        // Cache bar dimensions (only change on window resize)
+        let hBarWidth = 0, vBarHeight = 0;
+        function cacheBarSizes() {
+            hBarWidth = hBar.offsetWidth;
+            vBarHeight = vBar.offsetHeight;
+        }
+        requestAnimationFrame(cacheBarSizes);
+        window.addEventListener('resize', cacheBarSizes);
+
+        function updateScrollbars() {
+            const vb = currentViewBox;
+            const hRatio = vb.width / fullBounds.width;
+            if (hRatio >= 1) {
+                hBar.style.display = 'none';
+            } else {
+                hBar.style.display = '';
+                const thumbPx = Math.max(hRatio * hBarWidth, 30);
+                const maxTravel = hBarWidth - thumbPx;
+                const progress = (vb.x - fullBounds.x) / (fullBounds.width - vb.width);
+                const tx = Math.max(0, Math.min(maxTravel, progress * maxTravel));
+                hThumb.style.transform = `translate3d(${tx}px, 0, 0)`;
+                hThumb.style.width = thumbPx + 'px';
+            }
+            const vRatio = vb.height / fullBounds.height;
+            if (vRatio >= 1) {
+                vBar.style.display = 'none';
+            } else {
+                vBar.style.display = '';
+                const thumbPx = Math.max(vRatio * vBarHeight, 30);
+                const maxTravel = vBarHeight - thumbPx;
+                const progress = (vb.y - fullBounds.y) / (fullBounds.height - vb.height);
+                const ty = Math.max(0, Math.min(maxTravel, progress * maxTravel));
+                vThumb.style.transform = `translate3d(0, ${ty}px, 0)`;
+                vThumb.style.height = thumbPx + 'px';
+            }
+        }
+
         // Render connectors once (read-only, no updates needed)
         diagram.connectors.forEach(conn => {
             const association = associationMap.get(conn.associationId);
@@ -235,8 +385,6 @@
 
         container.appendChild(svg);
 
-        svg.style.willChange = 'viewBox';
-
         // Search Functionality
         const searchInput = document.getElementById('search-input');
         const searchButton = document.getElementById('search-button');
@@ -368,6 +516,7 @@
 
             currentViewBox = { x: newX, y: newY, width: newW, height: newH };
             svg.setAttribute('viewBox', `${newX} ${newY} ${newW} ${newH}`);
+            updateScrollbars();
         }
 
         // Mouse Wheel Zoom
@@ -410,6 +559,7 @@
 
                 currentViewBox = { x: newX, y: newY, width: newW, height: newH };
                 svg.setAttribute('viewBox', `${newX} ${newY} ${newW} ${newH}`);
+                updateScrollbars();
             }
         });
 
@@ -417,12 +567,23 @@
         svg.style.cursor = 'grab';
 
         let panStartViewBox = null;
+        let panScale = 1;
+        let panRafId = null;
+
+        // Compute the uniform scale factor accounting for preserveAspectRatio="meet"
+        function getPanScale(vb) {
+            const rect = svg.getBoundingClientRect();
+            const scaleX = vb.width / rect.width;
+            const scaleY = vb.height / rect.height;
+            return Math.max(scaleX, scaleY);
+        }
 
         svg.addEventListener('mousedown', (e) => {
             if (e.button === 0) {
                 isPanning = true;
                 startPoint = { x: e.clientX, y: e.clientY };
                 panStartViewBox = { ...currentViewBox };
+                panScale = getPanScale(panStartViewBox);
                 svg.style.cursor = 'grabbing';
                 e.preventDefault();
             }
@@ -434,37 +595,49 @@
             const dx = e.clientX - startPoint.x;
             const dy = e.clientY - startPoint.y;
 
-            // Direct viewBox manipulation - no DOM transform, ultra-smooth
-            const rect = svg.getBoundingClientRect();
-            const scaleX = panStartViewBox.width / rect.width;
-            const scaleY = panStartViewBox.height / rect.height;
+            const newX = panStartViewBox.x - (dx * panScale);
+            const newY = panStartViewBox.y - (dy * panScale);
 
-            const newX = panStartViewBox.x - (dx * scaleX);
-            const newY = panStartViewBox.y - (dy * scaleY);
+            currentViewBox.x = newX;
+            currentViewBox.y = newY;
+            clampViewBox(currentViewBox);
 
-            requestAnimationFrame(() => {
-                svg.setAttribute('viewBox', `${newX} ${newY} ${panStartViewBox.width} ${panStartViewBox.height}`);
+            if (panRafId) cancelAnimationFrame(panRafId);
+            panRafId = requestAnimationFrame(() => {
+                svg.setAttribute('viewBox', `${currentViewBox.x} ${currentViewBox.y} ${panStartViewBox.width} ${panStartViewBox.height}`);
+                updateScrollbars();
+                panRafId = null;
             });
         });
 
-        window.addEventListener('mouseup', (e) => {
+        function stopPan() {
             if (isPanning) {
-                const dx = e.clientX - startPoint.x;
-                const dy = e.clientY - startPoint.y;
-
-                const rect = svg.getBoundingClientRect();
-                const scaleX = panStartViewBox.width / rect.width;
-                const scaleY = panStartViewBox.height / rect.height;
-
-                const newX = panStartViewBox.x - (dx * scaleX);
-                const newY = panStartViewBox.y - (dy * scaleY);
-
-                currentViewBox = { x: newX, y: newY, width: panStartViewBox.width, height: panStartViewBox.height };
-
                 isPanning = false;
                 svg.style.cursor = 'grab';
             }
-        });
+            if (scrollDrag) {
+                scrollDrag = null;
+                document.body.style.userSelect = '';
+                updateScrollbars();
+            }
+        }
+
+        window.addEventListener('mouseup', stopPan);
+        document.addEventListener('mouseleave', stopPan);
+        window.addEventListener('blur', stopPan);
+
+        // Wheel scroll (without Ctrl/Cmd) to pan the diagram
+        svg.addEventListener('wheel', (e) => {
+            if (!e.ctrlKey && !e.metaKey) {
+                e.preventDefault();
+                const sc = getPanScale(currentViewBox);
+                currentViewBox.x += e.deltaX * sc;
+                currentViewBox.y += e.deltaY * sc;
+                clampViewBox(currentViewBox);
+                svg.setAttribute('viewBox', `${currentViewBox.x} ${currentViewBox.y} ${currentViewBox.width} ${currentViewBox.height}`);
+                updateScrollbars();
+            }
+        }, { passive: false });
 
         searchButton.addEventListener('click', performSearch);
         resetButton.addEventListener('click', resetView);

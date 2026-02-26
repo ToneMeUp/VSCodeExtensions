@@ -29,7 +29,7 @@ cd "$SCRIPT_DIR"
 # Build the extension
 echo "📦 Building extension..."
 npm run compile
-vsce package
+vsce package --allow-missing-repository
 
 VSIX_FILE="fwbo-viewer-0.0.1.vsix"
 
@@ -52,6 +52,12 @@ VSCODE_INSTALLED=false
 
 if command_exists code; then
     code --install-extension "$VSIX_FILE" --force && VSCODE_INSTALLED=true
+fi
+
+if [ "$VSCODE_INSTALLED" = false ] && [ "$MACHINE" = "Mac" ]; then
+    if [ -d "/Applications/Visual Studio Code.app" ]; then
+        "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --install-extension "$VSIX_FILE" --force && VSCODE_INSTALLED=true
+    fi
 fi
 
 if [ "$VSCODE_INSTALLED" = false ] && [ "$MACHINE" = "Windows" ]; then
