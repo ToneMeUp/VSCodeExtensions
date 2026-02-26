@@ -1,0 +1,44 @@
+{
+  "name": "fwbo-viewer",
+  "displayName": "FWBO Viewer",
+  "description": "Visual viewer for .fwbo files",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "publisher": "illumify",
+  "activationEvents": [
+    "onCustomEditor:fwbo.viewer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "fwbo.viewer",
+        "displayName": "FWBO Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.fwbo"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "20.x",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.4.0"
+  }
+}

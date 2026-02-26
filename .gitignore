@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Dependencies
+**/node_modules/
+
+# Build outputs
+**/out/
+**/dist/
+# *.vsix - Keep the packaged extension for distribution
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Package lock files (optional - uncomment if you want to ignore)
+# package-lock.json

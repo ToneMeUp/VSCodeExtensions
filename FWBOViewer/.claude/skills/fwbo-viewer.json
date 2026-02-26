@@ -1,0 +1,70 @@
+{
+  "name": "fwbo-viewer",
+  "version": "1.0.0",
+  "description": "Install, explain architecture, and develop the FWBO Viewer VS Code extension",
+  "trigger": {
+    "keywords": [
+      "fwbo",
+      "fwbo viewer",
+      "fwbo extension",
+      "install fwbo",
+      "deploy fwbo",
+      "fwbo architecture",
+      "how does fwbo work",
+      "fwbo structure",
+      "vs code extension",
+      "vscode extension",
+      "custom editor",
+      "webview extension"
+    ],
+    "patterns": [
+      "install.*fwbo",
+      "deploy.*fwbo",
+      "explain.*fwbo",
+      "architecture.*fwbo",
+      "how.*fwbo.*work",
+      "fwbo.*project.*structure",
+      "add.*feature.*fwbo",
+      "debug.*fwbo"
+    ]
+  },
+  "capabilities": [
+    "install-extension",
+    "explain-architecture",
+    "guide-development",
+    "troubleshoot-issues",
+    "package-distribute"
+  ],
+  "files": {
+    "skill_doc": ".claude/skills/fwbo-viewer.md",
+    "architecture": "ARCHITECTURE.md",
+    "deployment": "DEPLOYMENT_README.md",
+    "quick_start": "QUICK_START.md"
+  },
+  "commands": {
+    "install": {
+      "description": "Deploy FWBO Viewer to all compatible IDEs",
+      "script": "./deploy-all-ides.sh",
+      "prerequisites": ["node", "npm"]
+    },
+    "compile": {
+      "description": "Compile TypeScript to JavaScript",
+      "script": "npm run compile"
+    },
+    "watch": {
+      "description": "Watch mode - auto-compile on changes",
+      "script": "npm run watch"
+    },
+    "package": {
+      "description": "Package extension as VSIX",
+      "script": "vsce package"
+    }
+  },
+  "context": {
+    "project_type": "vscode-extension",
+    "language": "typescript",
+    "main_file": "src/extension.ts",
+    "output_dir": "out",
+    "package_file": "fwbo-viewer-0.0.1.vsix"
+  }
+}
