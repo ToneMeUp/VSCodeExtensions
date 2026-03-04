@@ -1,8 +1,14 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import { FwboDataProviderFactory } from './FwboDataProviderFactory';
+import { DiagramLayoutPersistence, DiagramShapeLayoutChange } from './DiagramLayoutPersistence';
 import * as path from 'path';
 import * as fs from 'fs';
+
+interface SaveLayoutMessage {
+    type: 'saveLayout';
+    changes: unknown;
+}
 
 export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
 
@@ -90,15 +96,13 @@ export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
                             EntityName: message.name
                         });
                         return;
-                    case 'moveShape':
-                        this.sendRequest('MoveShape', {
-                            ModelPath: document.fileName,
-                            ShapeId: message.shapeId,
-                            X: message.x,
-                            Y: message.y,
-                            Width: message.width,
-                            Height: message.height
-                        });
+                    case 'saveLayout':
+                        await this.handleSaveLayout(
+                            message as SaveLayoutMessage,
+                            document,
+                            webviewPanel,
+                            updateWebview
+                        );
                         return;
                     case 'requestAddProperty':
                         const propName = await vscode.window.showInputBox({ prompt: 'Enter Property Name' });
@@ -146,12 +150,13 @@ export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
     }
 
     private getHtmlForWebview(webview: vscode.Webview, data: any): string {
+        const cacheBuster = Date.now().toString();
         const scriptUri = webview.asWebviewUri(vscode.Uri.file(
             path.join(this.context.extensionPath, 'media', 'fwbo.js')
-        ));
+        )).with({ query: `v=${cacheBuster}` });
         const styleUri = webview.asWebviewUri(vscode.Uri.file(
             path.join(this.context.extensionPath, 'media', 'fwbo.css')
-        ));
+        )).with({ query: `v=${cacheBuster}` });
 
         const dataJson = JSON.stringify(data);
 
@@ -178,6 +183,114 @@ export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
             <script src="${scriptUri}"></script>
         </body>
         </html>`;
+    }
+
+    private async handleSaveLayout(
+        message: SaveLayoutMessage,
+        document: vscode.TextDocument,
+        webviewPanel: vscode.WebviewPanel,
+        updateWebview: (force?: boolean) => void
+    ): Promise<void> {
+        const diagramPath = document.fileName + '.diagram';
+        const changes = this.normalizeLayoutChanges(message.changes);
+
+        if (changes === null) {
+            await this.postLayoutResult(webviewPanel, false, 'Invalid layout payload.');
+            return;
+        }
+
+        if (!changes.length) {
+            await this.postLayoutResult(webviewPanel, true, 'No layout changes to save.');
+            return;
+        }
+
+        if (!fs.existsSync(diagramPath)) {
+            await this.postLayoutResult(webviewPanel, false, `Designer file not found: ${path.basename(diagramPath)}`);
+            return;
+        }
+
+        try {
+            const currentDiagramXml = fs.readFileSync(diagramPath, 'utf8');
+            const applyResult = DiagramLayoutPersistence.applyLayoutChanges(currentDiagramXml, changes);
+
+            if (applyResult.updatedText !== currentDiagramXml) {
+                fs.writeFileSync(diagramPath, applyResult.updatedText, 'utf8');
+            }
+
+            if (applyResult.appliedShapeIds.length === 0) {
+                await this.postLayoutResult(
+                    webviewPanel,
+                    false,
+                    'No matching shape IDs were found in the designer file.'
+                );
+                return;
+            }
+
+            const skippedDetails = applyResult.missingShapeIds.length
+                ? ` (${applyResult.missingShapeIds.length} shape(s) skipped)`
+                : '';
+            const saveMessage = `Saved layout for ${applyResult.appliedShapeIds.length} shape(s)${skippedDetails}.`;
+            await this.postLayoutResult(webviewPanel, true, saveMessage);
+
+            updateWebview(true);
+        } catch (error) {
+            const messageText = error instanceof Error ? error.message : String(error);
+            await this.postLayoutResult(webviewPanel, false, `Failed to save layout: ${messageText}`);
+        }
+    }
+
+    private normalizeLayoutChanges(rawChanges: unknown): DiagramShapeLayoutChange[] | null {
+        if (!Array.isArray(rawChanges)) {
+            return null;
+        }
+
+        const normalizedByShapeId = new Map<string, DiagramShapeLayoutChange>();
+
+        for (const entry of rawChanges) {
+            if (!entry || typeof entry !== 'object') {
+                return null;
+            }
+
+            const shapeId = this.readStringField(entry, 'shapeId');
+            const x = this.readNumberField(entry, 'x');
+            const y = this.readNumberField(entry, 'y');
+            const width = this.readNumberField(entry, 'width');
+            const height = this.readNumberField(entry, 'height');
+
+            if (!shapeId || x === null || y === null || width === null || height === null) {
+                return null;
+            }
+
+            if (width <= 0 || height <= 0) {
+                return null;
+            }
+
+            normalizedByShapeId.set(shapeId, { shapeId, x, y, width, height });
+        }
+
+        return Array.from(normalizedByShapeId.values());
+    }
+
+    private readStringField(value: object, key: string): string | null {
+        const raw = (value as Record<string, unknown>)[key];
+        return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+    }
+
+    private readNumberField(value: object, key: string): number | null {
+        const raw = (value as Record<string, unknown>)[key];
+        return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    }
+
+    private async postLayoutResult(
+        webviewPanel: vscode.WebviewPanel,
+        success: boolean,
+        message: string
+    ): Promise<void> {
+        await webviewPanel.webview.postMessage({
+            type: 'saveLayoutResult',
+            success,
+            message
+        });
     }
 
     private sendRequest(operation: string, payload: any) {

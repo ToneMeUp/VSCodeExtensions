@@ -66,6 +66,8 @@ export interface Connector {
     id: string;
     associationId: string;
     points: Point[];
+    sourceShapeId?: string;
+    targetShapeId?: string;
 }
 
 export interface Point {
@@ -353,10 +355,13 @@ export class FwboParser {
                 const connectors = Array.isArray(shapes.associationConnector) ? shapes.associationConnector : [shapes.associationConnector];
                 for (const c of connectors) {
                     const points = this.parseEdgePoints(c['@_edgePoints']);
+                    const shapeNodeIds = this.parseConnectorNodeShapeIds(c.nodes);
                     diagram.connectors.push({
                         id: c['@_Id'],
                         associationId: c.associationDcMoniker ? c.associationDcMoniker['@_Id'] : (c.associationMoniker ? c.associationMoniker['@_Id'] : ''),
-                        points: points
+                        points: points,
+                        sourceShapeId: shapeNodeIds[0],
+                        targetShapeId: shapeNodeIds[1]
                     });
                 }
             }
@@ -378,7 +383,7 @@ export class FwboParser {
         // Format: [(x1 : y1); (x2 : y2); ...]
         if (!pointsStr) return [];
         const points: Point[] = [];
-        const regex = /\(([\d\.]+)\s*:\s*([\d\.]+)\)/g;
+        const regex = /\((-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)\)/g;
         let match;
         while ((match = regex.exec(pointsStr)) !== null) {
             points.push({
@@ -387,5 +392,27 @@ export class FwboParser {
             });
         }
         return points;
+    }
+
+    private parseConnectorNodeShapeIds(nodes: any): string[] {
+        if (!nodes || typeof nodes !== 'object') {
+            return [];
+        }
+
+        const ids: string[] = [];
+        const values = Object.values(nodes);
+        for (const value of values) {
+            const list = Array.isArray(value) ? value : [value];
+            for (const entry of list) {
+                if (entry && typeof entry === 'object') {
+                    const rawId = (entry as any)['@_Id'];
+                    if (typeof rawId === 'string' && rawId) {
+                        ids.push(rawId);
+                    }
+                }
+            }
+        }
+
+        return ids;
     }
 }

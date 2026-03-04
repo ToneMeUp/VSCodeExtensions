@@ -181,60 +181,6 @@ else
 fi
 echo ""
 
-# Deploy to Windsurf
-echo "🌊 Deploying to Windsurf..."
-WINDSURF_INSTALLED=false
-
-if command_exists windsurf; then
-    windsurf --install-extension "$VSIX_FILE" --force && WINDSURF_INSTALLED=true
-fi
-
-if [ "$WINDSURF_INSTALLED" = false ]; then
-    case "${MACHINE}" in
-        Mac)
-            if [ -d "/Applications/Windsurf.app" ]; then
-                "/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf" --install-extension "$VSIX_FILE" --force && WINDSURF_INSTALLED=true
-            fi
-            ;;
-        Windows)
-            # Check common Windows installation paths
-            if [ -f "$LOCALAPPDATA/Programs/Windsurf/Windsurf.exe" ]; then
-                "$LOCALAPPDATA/Programs/Windsurf/Windsurf.exe" --install-extension "$VSIX_FILE" --force && WINDSURF_INSTALLED=true
-            elif [ -f "$USERPROFILE/AppData/Local/Programs/Windsurf/Windsurf.exe" ]; then
-                "$USERPROFILE/AppData/Local/Programs/Windsurf/Windsurf.exe" --install-extension "$VSIX_FILE" --force && WINDSURF_INSTALLED=true
-            fi
-            ;;
-        Linux)
-            # Check common Linux installation paths
-            if [ -f "$HOME/.local/share/windsurf/windsurf" ]; then
-                "$HOME/.local/share/windsurf/windsurf" --install-extension "$VSIX_FILE" --force && WINDSURF_INSTALLED=true
-            fi
-            ;;
-    esac
-fi
-
-if [ "$WINDSURF_INSTALLED" = true ]; then
-    echo "✅ Installed in Windsurf"
-else
-    echo "⚠️  Windsurf not found. Install from: https://codeium.com/windsurf"
-fi
-echo ""
-
-# Deploy to OpenCode
-echo "🟢 Deploying to OpenCode..."
-if command_exists opencode; then
-    opencode --install-extension "$VSIX_FILE" --force
-    echo "✅ Installed in OpenCode"
-else
-    # Check if OpenCode is installed in Applications (macOS)
-    if [ -d "/Applications/OpenCode.app" ]; then
-        "/Applications/OpenCode.app/Contents/Resources/app/bin/code" --install-extension "$VSIX_FILE" --force 2>/dev/null && echo "✅ Installed in OpenCode" || echo "⚠️  OpenCode found but installation failed"
-    else
-        echo "⚠️  OpenCode not found"
-    fi
-fi
-echo ""
-
 # Deploy to Code - OSS
 echo "🟠 Deploying to Code - OSS..."
 if command_exists code-oss; then
@@ -261,7 +207,7 @@ echo "===================================="
 echo ""
 echo "For IDEs not automatically detected, manually install using:"
 echo ""
-echo "1. Open your IDE (VS Code, Cursor, Windsurf, etc.)"
+echo "1. Open your IDE (VS Code, Cursor, etc.)"
 echo "2. Go to Extensions view (Cmd+Shift+X on macOS, Ctrl+Shift+X on Windows/Linux)"
 echo "3. Click the '...' menu in the Extensions view"
 echo "4. Select 'Install from VSIX...'"
@@ -272,7 +218,6 @@ echo "Or use the command line:"
 echo "  VS Code:    code --install-extension $VSIX_FILE"
 echo "  VS Codium:  codium --install-extension $VSIX_FILE"
 echo "  Cursor:     cursor --install-extension $VSIX_FILE"
-echo "  Windsurf:   windsurf --install-extension $VSIX_FILE"
 echo ""
 
 # Create copies for web-based deployment

@@ -69,23 +69,6 @@ if (Test-Command "cursor") {
 }
 Write-Host ""
 
-# Deploy to Windsurf
-Write-Host "🌊 Deploying to Windsurf..." -ForegroundColor Cyan
-if (Test-Command "windsurf") {
-    windsurf --install-extension $VsixFile --force
-    Write-Host "✅ Installed in Windsurf" -ForegroundColor Green
-} else {
-    # Check if Windsurf is installed in AppData (Windows)
-    $WindsurfPath = "$env:LOCALAPPDATA\Programs\Windsurf\Windsurf.exe"
-    if (Test-Path $WindsurfPath) {
-        & $WindsurfPath --install-extension $VsixFile --force
-        Write-Host "✅ Installed in Windsurf" -ForegroundColor Green
-    } else {
-        Write-Host "⚠️  Windsurf not found. Install from: https://codeium.com/windsurf" -ForegroundColor Yellow
-    }
-}
-Write-Host ""
-
 # Deploy to Code - OSS
 Write-Host "🟠 Deploying to Code - OSS..." -ForegroundColor DarkYellow
 if (Test-Command "code-oss") {
@@ -102,7 +85,7 @@ Write-Host "====================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "For IDEs not automatically detected, manually install using:"
 Write-Host ""
-Write-Host "1. Open your IDE (VS Code, Cursor, Windsurf, etc.)"
+Write-Host "1. Open your IDE (VS Code, Cursor, etc.)"
 Write-Host "2. Go to Extensions view (Ctrl+Shift+X)"
 Write-Host "3. Click the '...' menu in the Extensions view"
 Write-Host "4. Select 'Install from VSIX...'"
@@ -113,7 +96,6 @@ Write-Host "Or use the command line:"
 Write-Host "  VS Code:    code --install-extension $VsixFile"
 Write-Host "  VS Codium:  codium --install-extension $VsixFile"
 Write-Host "  Cursor:     cursor --install-extension $VsixFile"
-Write-Host "  Windsurf:   windsurf --install-extension $VsixFile"
 Write-Host ""
 
 # Create copies for web-based deployment
