@@ -27,6 +27,8 @@
         const minShapeWidth = 64;
         const minShapeHeight = 36;
         const boundsEpsilon = 0.000001;
+        const resizeEdgeHitPx = 8;
+        const maxHistoryEntries = 100;
 
         const shapeStateById = new Map();
         const dirtyChangesById = new Map();
@@ -40,8 +42,12 @@
         let isSpacePressed = false;
         let canvasToolMode = 'pan'; // pan | select
         let toolModeButton = null;
+        let undoButton = null;
+        let redoButton = null;
         let selectionIndicator = null;
         let viewToStateSeparator = null;
+        const undoStack = [];
+        const redoStack = [];
 
         diagram.shapes.forEach(shape => {
             const x = shape.x * scale;
@@ -139,6 +145,50 @@
             };
         }
 
+        function getResizeModeAtClientPoint(shapeState, clientX, clientY) {
+            if (!shapeState) {
+                return null;
+            }
+
+            const rect = shapeState.node.getBoundingClientRect();
+            if (!rect.width || !rect.height) {
+                return null;
+            }
+
+            if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+                return null;
+            }
+
+            const nearLeft = (clientX - rect.left) <= resizeEdgeHitPx;
+            const nearRight = (rect.right - clientX) <= resizeEdgeHitPx;
+            const nearTop = (clientY - rect.top) <= resizeEdgeHitPx;
+            const nearBottom = (rect.bottom - clientY) <= resizeEdgeHitPx;
+
+            const vertical = nearTop ? 'n' : (nearBottom ? 's' : '');
+            const horizontal = nearLeft ? 'w' : (nearRight ? 'e' : '');
+            const resizeMode = `${vertical}${horizontal}`;
+            return resizeMode || null;
+        }
+
+        function getResizeCursorForMode(resizeMode) {
+            switch (resizeMode) {
+                case 'n':
+                case 's':
+                    return 'ns-resize';
+                case 'e':
+                case 'w':
+                    return 'ew-resize';
+                case 'ne':
+                case 'sw':
+                    return 'nesw-resize';
+                case 'nw':
+                case 'se':
+                    return 'nwse-resize';
+                default:
+                    return 'move';
+            }
+        }
+
         function updateSelectionUi() {
             shapeStateById.forEach((shapeState, shapeId) => {
                 shapeState.node.classList.toggle('selected', selectedShapeIds.has(shapeId));
@@ -153,17 +203,17 @@
 
             const selectedCount = selectedShapeIds.size;
             if (selectedCount === 0) {
-                selectionIndicator.textContent = '';
+                selectionIndicator.textContent = '0 selected';
                 selectionIndicator.classList.remove('active');
-                selectionIndicator.classList.add('is-hidden');
+                selectionIndicator.classList.add('muted');
             } else if (selectedCount === 1) {
                 selectionIndicator.textContent = '1 selected';
                 selectionIndicator.classList.add('active');
-                selectionIndicator.classList.remove('is-hidden');
+                selectionIndicator.classList.remove('muted');
             } else {
                 selectionIndicator.textContent = `${selectedCount} selected`;
                 selectionIndicator.classList.add('active');
-                selectionIndicator.classList.remove('is-hidden');
+                selectionIndicator.classList.remove('muted');
             }
 
             updateStateSeparatorVisibility();
@@ -174,8 +224,127 @@
                 return;
             }
 
-            const showStateGroupDivider = isSavingLayout || dirtyChangesById.size > 0 || selectedShapeIds.size > 0;
-            viewToStateSeparator.classList.toggle('is-hidden', !showStateGroupDivider);
+            viewToStateSeparator.classList.remove('is-hidden');
+        }
+
+        function updateHistoryUi() {
+            const canUseHistory = !isSavingLayout && interactionMode === 'idle';
+            const canUndo = canUseHistory && undoStack.length > 0;
+            const canRedo = canUseHistory && redoStack.length > 0;
+
+            if (undoButton) {
+                undoButton.disabled = !canUndo;
+            }
+
+            if (redoButton) {
+                redoButton.disabled = !canRedo;
+            }
+        }
+
+        function pushHistoryEntry(entry) {
+            if (!entry || !entry.changes || !entry.changes.length) {
+                return;
+            }
+
+            undoStack.push(entry);
+            if (undoStack.length > maxHistoryEntries) {
+                undoStack.shift();
+            }
+            redoStack.length = 0;
+            updateHistoryUi();
+        }
+
+        function buildHistoryEntryFromInteraction(interaction) {
+            if (!interaction) {
+                return null;
+            }
+
+            const mode = interaction._mode || interaction.mode || '';
+            const changes = [];
+
+            if (mode === 'dragging' && interaction.shapeIds && interaction.startBoundsByShapeId) {
+                for (const shapeId of interaction.shapeIds) {
+                    const beforeBounds = interaction.startBoundsByShapeId.get(shapeId);
+                    const shapeState = shapeStateById.get(shapeId);
+                    if (!beforeBounds || !shapeState) {
+                        continue;
+                    }
+
+                    const afterBounds = shapeState.current;
+                    if (boundsEqual(beforeBounds, afterBounds)) {
+                        continue;
+                    }
+
+                    changes.push({
+                        shapeId,
+                        before: cloneBounds(beforeBounds),
+                        after: cloneBounds(afterBounds)
+                    });
+                }
+            } else if (mode === 'resizing' && interaction.shapeId && interaction.startBounds) {
+                const shapeState = shapeStateById.get(interaction.shapeId);
+                if (shapeState && !boundsEqual(interaction.startBounds, shapeState.current)) {
+                    changes.push({
+                        shapeId: interaction.shapeId,
+                        before: cloneBounds(interaction.startBounds),
+                        after: cloneBounds(shapeState.current)
+                    });
+                }
+            }
+
+            if (!changes.length) {
+                return null;
+            }
+
+            changes.sort((a, b) => a.shapeId.localeCompare(b.shapeId));
+            return { changes };
+        }
+
+        function applyHistoryEntry(entry, direction) {
+            if (!entry || !entry.changes || !entry.changes.length) {
+                return;
+            }
+
+            const targetKey = direction === 'undo' ? 'before' : 'after';
+            entry.changes.forEach(change => {
+                const targetBounds = change[targetKey];
+                if (!targetBounds) {
+                    return;
+                }
+                updateShapeElement(change.shapeId, targetBounds, true);
+            });
+        }
+
+        function undoLayoutChange() {
+            if (isSavingLayout || interactionMode !== 'idle' || undoStack.length === 0) {
+                return;
+            }
+
+            const entry = undoStack.pop();
+            if (!entry) {
+                updateHistoryUi();
+                return;
+            }
+
+            applyHistoryEntry(entry, 'undo');
+            redoStack.push(entry);
+            updateHistoryUi();
+        }
+
+        function redoLayoutChange() {
+            if (isSavingLayout || interactionMode !== 'idle' || redoStack.length === 0) {
+                return;
+            }
+
+            const entry = redoStack.pop();
+            if (!entry) {
+                updateHistoryUi();
+                return;
+            }
+
+            applyHistoryEntry(entry, 'redo');
+            undoStack.push(entry);
+            updateHistoryUi();
         }
 
         function setSelection(shapeIds) {
@@ -338,14 +507,35 @@
                 const startBounds = activeShapeInteraction.startBounds;
                 const dx = pointerPoint.x - activeShapeInteraction.startPointer.x;
                 const dy = pointerPoint.y - activeShapeInteraction.startPointer.y;
+                const resizeMode = activeShapeInteraction.resizeMode || 'se';
+                let nextX = startBounds.x;
+                let nextY = startBounds.y;
+                let nextWidth = startBounds.width;
+                let nextHeight = startBounds.height;
+
+                if (resizeMode.includes('e')) {
+                    nextWidth = Math.max(minShapeWidth, startBounds.width + dx);
+                }
+                if (resizeMode.includes('s')) {
+                    nextHeight = Math.max(minShapeHeight, startBounds.height + dy);
+                }
+                if (resizeMode.includes('w')) {
+                    nextWidth = Math.max(minShapeWidth, startBounds.width - dx);
+                    nextX = startBounds.x + (startBounds.width - nextWidth);
+                }
+                if (resizeMode.includes('n')) {
+                    nextHeight = Math.max(minShapeHeight, startBounds.height - dy);
+                    nextY = startBounds.y + (startBounds.height - nextHeight);
+                }
+
                 pendingInteractionUpdate = {
                     updates: [{
                         shapeId: activeShapeInteraction.shapeId,
                         bounds: {
-                            x: startBounds.x,
-                            y: startBounds.y,
-                            width: Math.max(minShapeWidth, startBounds.width + dx),
-                            height: Math.max(minShapeHeight, startBounds.height + dy)
+                            x: nextX,
+                            y: nextY,
+                            width: nextWidth,
+                            height: nextHeight
                         }
                     }]
                 };
@@ -631,6 +821,7 @@
                 height: 0
             });
             document.body.style.userSelect = 'none';
+            updateHistoryUi();
         }
 
         function updateSelectionInteraction(event) {
@@ -680,6 +871,7 @@
             interactionMode = 'idle';
             hideSelectionRect();
             document.body.style.userSelect = '';
+            updateHistoryUi();
             updateCanvasCursor();
         }
 
@@ -791,29 +983,36 @@
                 startBoundsByShapeId
             };
             document.body.style.userSelect = 'none';
+            updateHistoryUi();
         }
 
-        function beginShapeResize(shapeId, event) {
+        function beginShapeResize(shapeId, event, resizeMode) {
             if (interactionMode !== 'idle' || isSavingLayout) return;
             const shapeState = shapeStateById.get(shapeId);
             if (!shapeState) return;
 
             const pointerPoint = getSvgPointFromClient(event.clientX, event.clientY);
             if (!pointerPoint) return;
+            const resolvedResizeMode = resizeMode || getResizeModeAtClientPoint(shapeState, event.clientX, event.clientY) || 'se';
 
             interactionMode = 'resizing';
             activeShapeInteraction = {
                 shapeId,
                 startPointer: pointerPoint,
-                startBounds: cloneBounds(shapeState.current)
+                startBounds: cloneBounds(shapeState.current),
+                resizeMode: resolvedResizeMode
             };
 
             shapeState.node.classList.add('layout-interacting');
+            shapeState.node.style.cursor = getResizeCursorForMode(resolvedResizeMode);
             document.body.style.userSelect = 'none';
+            updateHistoryUi();
         }
 
         function endShapeInteraction() {
             if (!activeShapeInteraction) return;
+            const completedInteraction = activeShapeInteraction;
+            const completedInteractionMode = interactionMode;
 
             if (interactionRafId) {
                 cancelAnimationFrame(interactionRafId);
@@ -829,11 +1028,21 @@
 
             shapeStateById.forEach(shapeState => {
                 shapeState.node.classList.remove('layout-interacting');
+                shapeState.node.style.cursor = 'move';
             });
 
             activeShapeInteraction = null;
             interactionMode = 'idle';
             document.body.style.userSelect = '';
+            const historyEntry = buildHistoryEntryFromInteraction({
+                ...completedInteraction,
+                _mode: completedInteractionMode
+            });
+            if (historyEntry) {
+                pushHistoryEntry(historyEntry);
+            } else {
+                updateHistoryUi();
+            }
             updateCanvasCursor();
         }
 
@@ -927,17 +1136,22 @@
                 }
             }
 
-            const resizeHandle = document.createElement('div');
-            resizeHandle.className = 'resize-handle';
-            resizeHandle.title = 'Resize';
-            div.appendChild(resizeHandle);
-
             div.addEventListener('mousedown', (event) => {
                 if (event.button !== 0) return;
                 const target = event.target;
                 if (!(target instanceof Element)) return;
 
-                if (target.closest('.resize-handle')) {
+                const shapeState = shapeStateById.get(shape.id);
+                const resizeMode = (!event.ctrlKey && !event.metaKey && !event.shiftKey)
+                    ? getResizeModeAtClientPoint(shapeState, event.clientX, event.clientY)
+                    : null;
+                if (resizeMode) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!selectedShapeIds.has(shape.id) || selectedShapeIds.size !== 1) {
+                        setSelection([shape.id]);
+                    }
+                    beginShapeResize(shape.id, event, resizeMode);
                     return;
                 }
 
@@ -968,14 +1182,20 @@
                 beginShapeDrag(shape.id, event);
             });
 
-            resizeHandle.addEventListener('mousedown', (event) => {
-                if (event.button !== 0) return;
-                event.preventDefault();
-                event.stopPropagation();
-                if (!selectedShapeIds.has(shape.id) || selectedShapeIds.size !== 1) {
-                    setSelection([shape.id]);
+            div.addEventListener('mousemove', (event) => {
+                if (interactionMode !== 'idle' || isSavingLayout) {
+                    return;
                 }
-                beginShapeResize(shape.id, event);
+                const shapeState = shapeStateById.get(shape.id);
+                const resizeMode = getResizeModeAtClientPoint(shapeState, event.clientX, event.clientY);
+                div.style.cursor = getResizeCursorForMode(resizeMode);
+            });
+
+            div.addEventListener('mouseleave', () => {
+                if (interactionMode !== 'idle') {
+                    return;
+                }
+                div.style.cursor = 'move';
             });
 
             fo.appendChild(div);
@@ -1026,13 +1246,32 @@
         searchNav.appendChild(searchPrevButton);
         searchNav.appendChild(searchNextButton);
         searchContainer.insertBefore(searchNav, searchCount.nextSibling);
-        searchCount.classList.add('is-hidden');
-        searchNav.classList.add('is-hidden');
 
         const searchToViewSeparator = document.createElement('span');
         searchToViewSeparator.className = 'toolbar-separator';
         searchToViewSeparator.setAttribute('aria-hidden', 'true');
         searchContainer.appendChild(searchToViewSeparator);
+
+        undoButton = document.createElement('button');
+        undoButton.id = 'undo-button';
+        undoButton.type = 'button';
+        undoButton.setAttribute('aria-label', 'Undo layout change');
+        undoButton.title = 'Undo (Cmd/Ctrl+Z)';
+        undoButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7L4 12l5 5" /><path d="M20 20v-4a6 6 0 0 0-6-6H4" /></svg><span>Undo</span>';
+        searchContainer.appendChild(undoButton);
+
+        redoButton = document.createElement('button');
+        redoButton.id = 'redo-button';
+        redoButton.type = 'button';
+        redoButton.setAttribute('aria-label', 'Redo layout change');
+        redoButton.title = 'Redo (Shift+Cmd/Ctrl+Z or Ctrl+Y)';
+        redoButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7l5 5-5 5" /><path d="M4 20v-4a6 6 0 0 1 6-6h10" /></svg><span>Redo</span>';
+        searchContainer.appendChild(redoButton);
+
+        const editToViewSeparator = document.createElement('span');
+        editToViewSeparator.className = 'toolbar-separator';
+        editToViewSeparator.setAttribute('aria-hidden', 'true');
+        searchContainer.appendChild(editToViewSeparator);
 
         // Add Reset Button
         const resetButton = document.createElement('button');
@@ -1054,11 +1293,6 @@
         dirtyIndicator.id = 'layout-dirty-indicator';
         dirtyIndicator.textContent = 'Saved';
         searchContainer.appendChild(dirtyIndicator);
-
-        selectionIndicator = document.createElement('span');
-        selectionIndicator.id = 'selection-indicator';
-        selectionIndicator.textContent = '';
-        searchContainer.appendChild(selectionIndicator);
 
         const layoutToast = document.createElement('div');
         layoutToast.id = 'layout-toast';
@@ -1098,8 +1332,8 @@
             const isPanMode = canvasToolMode === 'pan';
             toolModeButton.dataset.mode = canvasToolMode;
             toolModeButton.innerHTML = isPanMode
-                ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V5a1 1 0 0 1 2 0v6M10 11V4a1 1 0 1 1 2 0v7M13 11V5a1 1 0 0 1 2 0v6M16 12V7a1 1 0 0 1 2 0v8a5 5 0 0 1-5 5h-1a6 6 0 0 1-6-6v-2a2 2 0 0 1 2-2h0.2" /></svg>'
-                : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l13 7-6 2 2 7-3 1-2-7-4 4z" /></svg>';
+                ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V5a1 1 0 0 1 2 0v6M10 11V4a1 1 0 1 1 2 0v7M13 11V5a1 1 0 0 1 2 0v6M16 12V7a1 1 0 0 1 2 0v8a5 5 0 0 1-5 5h-1a6 6 0 0 1-6-6v-2a2 2 0 0 1 2-2h0.2" /></svg><span>Pan</span>'
+                : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l13 7-6 2 2 7-3 1-2-7-4 4z" /></svg><span>Select</span>';
             toolModeButton.setAttribute('aria-label', isPanMode ? 'Pan tool' : 'Select tool');
             toolModeButton.title = isPanMode
                 ? 'Pan mode: drag background to pan'
@@ -1111,23 +1345,29 @@
             const dirtyCount = dirtyChangesById.size;
             if (isSavingLayout) {
                 dirtyIndicator.textContent = `Saving ${dirtyCount}...`;
-                dirtyIndicator.classList.remove('is-hidden');
+                dirtyIndicator.classList.remove('muted');
+                dirtyIndicator.classList.add('saving');
                 updateStateSeparatorVisibility();
+                updateHistoryUi();
                 return;
             }
 
             if (dirtyCount === 0) {
-                dirtyIndicator.textContent = '';
-                dirtyIndicator.classList.add('is-hidden');
+                dirtyIndicator.textContent = 'Saved';
+                dirtyIndicator.classList.add('muted');
+                dirtyIndicator.classList.remove('saving');
             } else if (dirtyCount === 1) {
                 dirtyIndicator.textContent = '1 unsaved';
-                dirtyIndicator.classList.remove('is-hidden');
+                dirtyIndicator.classList.remove('muted');
+                dirtyIndicator.classList.remove('saving');
             } else {
                 dirtyIndicator.textContent = `${dirtyCount} unsaved`;
-                dirtyIndicator.classList.remove('is-hidden');
+                dirtyIndicator.classList.remove('muted');
+                dirtyIndicator.classList.remove('saving');
             }
 
             updateStateSeparatorVisibility();
+            updateHistoryUi();
         }
 
         function showToast(message, isError) {
@@ -1234,6 +1474,22 @@
                 return;
             }
 
+            if (!isTextInput && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+                event.preventDefault();
+                if (event.shiftKey) {
+                    redoLayoutChange();
+                } else {
+                    undoLayoutChange();
+                }
+                return;
+            }
+
+            if (!isTextInput && event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'y') {
+                event.preventDefault();
+                redoLayoutChange();
+                return;
+            }
+
             if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'f') {
                 event.preventDefault();
                 searchInput.focus();
@@ -1258,6 +1514,7 @@
 
         updateLayoutDirtyUi();
         updateToolModeUi();
+        updateHistoryUi();
         updateSelectionSummaryUi();
         updateSearchUiState('');
 
@@ -1276,22 +1533,13 @@
         function updateSearchUiState(token) {
             const hasToken = token.length > 0;
             const hasMatches = matches.length > 0;
-            const showSearchMeta = hasPerformedSearch && hasToken;
-
-            searchCount.classList.toggle('is-hidden', !showSearchMeta);
-            searchNav.classList.toggle('is-hidden', !showSearchMeta);
 
             searchClearButton.disabled = !hasToken;
-            searchPrevButton.disabled = !showSearchMeta || !hasMatches;
-            searchNextButton.disabled = !showSearchMeta || !hasMatches;
+            searchPrevButton.disabled = !hasMatches;
+            searchNextButton.disabled = !hasMatches;
 
-            if (!showSearchMeta) {
-                searchCount.textContent = '';
-                return;
-            }
-
-            if (!hasMatches) {
-                searchCount.textContent = '0 found';
+            if (!hasMatches || currentMatchIndex < 0) {
+                searchCount.textContent = '0/0';
                 return;
             }
 
@@ -1627,6 +1875,8 @@
         }, { passive: false });
 
         searchButton.addEventListener('click', performSearch);
+        undoButton.addEventListener('click', undoLayoutChange);
+        redoButton.addEventListener('click', redoLayoutChange);
         resetButton.addEventListener('click', resetView);
         toolModeButton.addEventListener('click', () => {
             if (isSavingLayout || interactionMode !== 'idle') {
