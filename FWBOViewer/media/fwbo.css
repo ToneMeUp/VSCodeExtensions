@@ -409,18 +409,19 @@ svg:active {
 .connector {
     fill: none;
     stroke: #5f6773;
-    stroke-width: 1.5;
+    stroke-width: 0.75;
     stroke-opacity: 1;
-    stroke-dasharray: 4 4;
+    stroke-dasharray: 0.35 2.8;
     stroke-linecap: round;
-    stroke-linejoin: round;
+    stroke-linejoin: miter;
+    stroke-miterlimit: 2;
     transition: stroke 0.15s ease;
 }
 
 .connector:hover {
     stroke: #2b3443;
-    stroke-width: 1.8;
-    stroke-dasharray: 4 4;
+    stroke-width: 0.95;
+    stroke-dasharray: 0.35 2.8;
 }
 
 /* Solid connectors for associations */

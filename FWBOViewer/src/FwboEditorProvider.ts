@@ -154,6 +154,9 @@ export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
         const scriptUri = webview.asWebviewUri(vscode.Uri.file(
             path.join(this.context.extensionPath, 'media', 'fwbo.js')
         )).with({ query: `v=${cacheBuster}` });
+        const pathfindingUri = webview.asWebviewUri(vscode.Uri.file(
+            path.join(this.context.extensionPath, 'media', 'pathfinding-browser.min.js')
+        )).with({ query: `v=${cacheBuster}` });
         const styleUri = webview.asWebviewUri(vscode.Uri.file(
             path.join(this.context.extensionPath, 'media', 'fwbo.css')
         )).with({ query: `v=${cacheBuster}` });
@@ -180,6 +183,7 @@ export class FwboEditorProvider implements vscode.CustomTextEditorProvider {
             <script>
                 const fwboData = ${dataJson};
             </script>
+            <script src="${pathfindingUri}"></script>
             <script src="${scriptUri}"></script>
         </body>
         </html>`;

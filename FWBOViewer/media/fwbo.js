@@ -619,56 +619,68 @@
         }
 
         const connectorRenderRecords = [];
+        const pathfinding = (typeof window !== 'undefined' && window.PF) ? window.PF : null;
+        const connectorRouteCellSize = 10;
+        const connectorRoutePadding = 2;
+        const connectorRouteAttemptMargins = [64, 128, 256, 384];
+        const connectorPortOffset = 16;
+        const connectorBoundaryGap = 2;
+        const connectorPortInset = 10;
+        const connectorPortSampleFractions = [0.2, 0.35, 0.5, 0.65, 0.8];
+        const connectorTurnPenalty = 120;
+        const cardinalityAlongOffset = 16;
+        const cardinalityPerpendicularOffset = 10;
+        const maxPortPairCandidates = 36;
+        const maxRoutingGridCells = 180000;
 
         function createMultiplicityLabel(textContent, textAnchor) {
             const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
             text.setAttribute('class', 'cardinality-label');
-            if (textAnchor) {
-                text.setAttribute('text-anchor', textAnchor);
-            }
+            text.setAttribute('text-anchor', textAnchor || 'middle');
             text.textContent = textContent;
             connectorsGroup.appendChild(text);
             return text;
+        }
+
+        function getCardinalityLabelPosition(endpoint, adjacent) {
+            const dx = adjacent.x - endpoint.x;
+            const dy = adjacent.y - endpoint.y;
+
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                const stepX = dx === 0 ? 1 : Math.sign(dx);
+                return {
+                    x: endpoint.x + (stepX * cardinalityAlongOffset),
+                    y: endpoint.y - cardinalityPerpendicularOffset
+                };
+            }
+
+            const stepY = dy === 0 ? 1 : Math.sign(dy);
+            return {
+                x: endpoint.x + cardinalityPerpendicularOffset,
+                y: endpoint.y + (stepY * cardinalityAlongOffset)
+            };
         }
 
         function updateSourceLabelPosition(label, points) {
             if (points.length < 2) return;
             const startPoint = points[0];
             const nextPoint = points[1];
-            let dx = 10;
-            let dy = -5;
-
-            if (Math.abs(nextPoint.x - startPoint.x) < Math.abs(nextPoint.y - startPoint.y)) {
-                dx = 5;
-                dy = (nextPoint.y > startPoint.y) ? 15 : -5;
-            } else {
-                dx = (nextPoint.x > startPoint.x) ? 10 : -10;
-            }
-
-            label.setAttribute('x', String(startPoint.x + dx));
-            label.setAttribute('y', String(startPoint.y + dy));
+            const position = getCardinalityLabelPosition(startPoint, nextPoint);
+            label.setAttribute('x', String(position.x));
+            label.setAttribute('y', String(position.y));
         }
 
         function updateTargetLabelPosition(label, points) {
             if (points.length < 2) return;
             const endPoint = points[points.length - 1];
             const prevPoint = points[points.length - 2];
-            let dx = -10;
-            let dy = -5;
-
-            if (Math.abs(endPoint.x - prevPoint.x) < Math.abs(endPoint.y - prevPoint.y)) {
-                dx = 5;
-                dy = (endPoint.y > prevPoint.y) ? -5 : 15;
-            } else {
-                dx = (endPoint.x > prevPoint.x) ? -10 : 10;
-            }
-
-            label.setAttribute('x', String(endPoint.x + dx));
-            label.setAttribute('y', String(endPoint.y + dy));
+            const position = getCardinalityLabelPosition(endPoint, prevPoint);
+            label.setAttribute('x', String(position.x));
+            label.setAttribute('y', String(position.y));
         }
 
         function applyConnectorGeometry(record, nextPoints) {
-            record.points = nextPoints.map(point => ({ x: point.x, y: point.y }));
+            record.points = normalizeOrthogonalPath(nextPoints).map(point => ({ x: point.x, y: point.y }));
             record.polyline.setAttribute(
                 'points',
                 record.points.map(point => `${point.x},${point.y}`).join(' ')
@@ -727,7 +739,575 @@
                 : { x: nextEndpoint.x, y: nextEndpoint.y + dy };
         }
 
-        function recomputeConnectorPoints(record) {
+        function clampGridIndex(value, maxExclusive) {
+            if (maxExclusive <= 0) {
+                return 0;
+            }
+            return Math.max(0, Math.min(maxExclusive - 1, value));
+        }
+
+        function pointToGridCell(point, routeBounds) {
+            return {
+                col: clampGridIndex(Math.round((point.x - routeBounds.minX) / connectorRouteCellSize), routeBounds.cols),
+                row: clampGridIndex(Math.round((point.y - routeBounds.minY) / connectorRouteCellSize), routeBounds.rows)
+            };
+        }
+
+        function gridCellToPoint(col, row, routeBounds) {
+            return {
+                x: routeBounds.minX + col * connectorRouteCellSize,
+                y: routeBounds.minY + row * connectorRouteCellSize
+            };
+        }
+
+        function getPrimaryDirection(fromPoint, toPoint) {
+            const dx = toPoint.x - fromPoint.x;
+            const dy = toPoint.y - fromPoint.y;
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                return dx >= 0 ? 'e' : 'w';
+            }
+            return dy >= 0 ? 's' : 'n';
+        }
+
+        function getOppositeDirection(direction) {
+            switch (direction) {
+                case 'n': return 's';
+                case 's': return 'n';
+                case 'e': return 'w';
+                case 'w': return 'e';
+                default: return direction;
+            }
+        }
+
+        function offsetPoint(point, direction, distance) {
+            switch (direction) {
+                case 'n':
+                    return { x: point.x, y: point.y - distance };
+                case 's':
+                    return { x: point.x, y: point.y + distance };
+                case 'e':
+                    return { x: point.x + distance, y: point.y };
+                case 'w':
+                    return { x: point.x - distance, y: point.y };
+                default:
+                    return { x: point.x, y: point.y };
+            }
+        }
+
+        function markCellWalkable(grid, cell, walkable) {
+            if (!cell) {
+                return;
+            }
+            const width = grid.width;
+            const height = grid.height;
+            if (cell.col < 0 || cell.col >= width || cell.row < 0 || cell.row >= height) {
+                return;
+            }
+            grid.setWalkableAt(cell.col, cell.row, walkable);
+        }
+
+        function dedupeConnectorPoints(points) {
+            if (!points.length) {
+                return points;
+            }
+
+            const deduped = [points[0]];
+            for (let i = 1; i < points.length; i += 1) {
+                const prev = deduped[deduped.length - 1];
+                const current = points[i];
+                if (Math.abs(prev.x - current.x) < 0.5 && Math.abs(prev.y - current.y) < 0.5) {
+                    continue;
+                }
+                deduped.push(current);
+            }
+            return deduped;
+        }
+
+        function simplifyOrthogonalPath(worldPath) {
+            if (worldPath.length <= 2) {
+                return worldPath;
+            }
+
+            const simplified = [worldPath[0]];
+            for (let i = 1; i < worldPath.length - 1; i += 1) {
+                const prev = worldPath[i - 1];
+                const curr = worldPath[i];
+                const next = worldPath[i + 1];
+                const dirAX = Math.sign(curr.x - prev.x);
+                const dirAY = Math.sign(curr.y - prev.y);
+                const dirBX = Math.sign(next.x - curr.x);
+                const dirBY = Math.sign(next.y - curr.y);
+                if (dirAX !== dirBX || dirAY !== dirBY) {
+                    simplified.push(curr);
+                }
+            }
+            simplified.push(worldPath[worldPath.length - 1]);
+            return simplified;
+        }
+
+        function snapCoordinate(value) {
+            return Math.round(value * 2) / 2;
+        }
+
+        function snapPoint(point) {
+            return {
+                x: snapCoordinate(point.x),
+                y: snapCoordinate(point.y)
+            };
+        }
+
+        function pickOrthogonalCorner(prev, next, lookahead) {
+            const cornerA = { x: next.x, y: prev.y };
+            const cornerB = { x: prev.x, y: next.y };
+
+            if (lookahead) {
+                const aAligned = Math.abs(lookahead.x - cornerA.x) < 0.01 || Math.abs(lookahead.y - cornerA.y) < 0.01;
+                const bAligned = Math.abs(lookahead.x - cornerB.x) < 0.01 || Math.abs(lookahead.y - cornerB.y) < 0.01;
+                if (aAligned && !bAligned) {
+                    return cornerA;
+                }
+                if (bAligned && !aAligned) {
+                    return cornerB;
+                }
+            }
+
+            const dx = Math.abs(next.x - prev.x);
+            const dy = Math.abs(next.y - prev.y);
+            return dx >= dy ? cornerA : cornerB;
+        }
+
+        function normalizeOrthogonalPath(points) {
+            if (!points.length) {
+                return points;
+            }
+
+            const snapped = points.map(snapPoint);
+            const orthogonal = [snapped[0]];
+
+            for (let i = 1; i < snapped.length; i += 1) {
+                const current = snapped[i];
+                const previous = orthogonal[orthogonal.length - 1];
+                if (Math.abs(previous.x - current.x) < 0.01 && Math.abs(previous.y - current.y) < 0.01) {
+                    continue;
+                }
+
+                if (Math.abs(previous.x - current.x) >= 0.01 && Math.abs(previous.y - current.y) >= 0.01) {
+                    const lookahead = i + 1 < snapped.length ? snapped[i + 1] : null;
+                    const corner = pickOrthogonalCorner(previous, current, lookahead);
+                    const last = orthogonal[orthogonal.length - 1];
+                    if (Math.abs(last.x - corner.x) >= 0.01 || Math.abs(last.y - corner.y) >= 0.01) {
+                        orthogonal.push(corner);
+                    }
+                }
+
+                const last = orthogonal[orthogonal.length - 1];
+                if (Math.abs(last.x - current.x) >= 0.01 || Math.abs(last.y - current.y) >= 0.01) {
+                    orthogonal.push(current);
+                }
+            }
+
+            return dedupeConnectorPoints(simplifyOrthogonalPath(orthogonal));
+        }
+
+        function computePathLength(points) {
+            let length = 0;
+            for (let i = 1; i < points.length; i += 1) {
+                length += Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);
+            }
+            return length;
+        }
+
+        function computeTurnCount(points) {
+            if (points.length < 3) {
+                return 0;
+            }
+            let turns = 0;
+            for (let i = 1; i < points.length - 1; i += 1) {
+                const prev = points[i - 1];
+                const curr = points[i];
+                const next = points[i + 1];
+                const dx1 = Math.sign(curr.x - prev.x);
+                const dy1 = Math.sign(curr.y - prev.y);
+                const dx2 = Math.sign(next.x - curr.x);
+                const dy2 = Math.sign(next.y - curr.y);
+                if (dx1 !== dx2 || dy1 !== dy2) {
+                    turns += 1;
+                }
+            }
+            return turns;
+        }
+
+        function scorePath(points) {
+            return computePathLength(points) + (computeTurnCount(points) * connectorTurnPenalty);
+        }
+
+        function getShapeCenter(bounds) {
+            return {
+                x: bounds.x + (bounds.width / 2),
+                y: bounds.y + (bounds.height / 2)
+            };
+        }
+
+        function getSideCoordinateRange(bounds, side) {
+            if (side === 'e' || side === 'w') {
+                const min = bounds.y + Math.min(connectorPortInset, bounds.height / 2);
+                const max = bounds.y + bounds.height - Math.min(connectorPortInset, bounds.height / 2);
+                return { min, max };
+            }
+            const min = bounds.x + Math.min(connectorPortInset, bounds.width / 2);
+            const max = bounds.x + bounds.width - Math.min(connectorPortInset, bounds.width / 2);
+            return { min, max };
+        }
+
+        function clampToSideRange(bounds, side, value) {
+            const range = getSideCoordinateRange(bounds, side);
+            if (range.max < range.min) {
+                return (range.min + range.max) / 2;
+            }
+            return Math.max(range.min, Math.min(range.max, value));
+        }
+
+        function getNearestSide(bounds, point) {
+            const distances = [
+                { side: 'n', distance: Math.abs(point.y - bounds.y) },
+                { side: 's', distance: Math.abs(point.y - (bounds.y + bounds.height)) },
+                { side: 'w', distance: Math.abs(point.x - bounds.x) },
+                { side: 'e', distance: Math.abs(point.x - (bounds.x + bounds.width)) }
+            ];
+            distances.sort((a, b) => a.distance - b.distance);
+            return distances[0].side;
+        }
+
+        function createShapePort(bounds, side, coordinate, sideRank) {
+            if (side === 'e') {
+                return {
+                    side,
+                    sideRank,
+                    boundary: { x: bounds.x + bounds.width + connectorBoundaryGap, y: coordinate },
+                    outer: { x: bounds.x + bounds.width + connectorBoundaryGap + connectorPortOffset, y: coordinate }
+                };
+            }
+            if (side === 'w') {
+                return {
+                    side,
+                    sideRank,
+                    boundary: { x: bounds.x - connectorBoundaryGap, y: coordinate },
+                    outer: { x: bounds.x - connectorBoundaryGap - connectorPortOffset, y: coordinate }
+                };
+            }
+            if (side === 's') {
+                return {
+                    side,
+                    sideRank,
+                    boundary: { x: coordinate, y: bounds.y + bounds.height + connectorBoundaryGap },
+                    outer: { x: coordinate, y: bounds.y + bounds.height + connectorBoundaryGap + connectorPortOffset }
+                };
+            }
+            return {
+                side: 'n',
+                sideRank,
+                boundary: { x: coordinate, y: bounds.y - connectorBoundaryGap },
+                outer: { x: coordinate, y: bounds.y - connectorBoundaryGap - connectorPortOffset }
+            };
+        }
+
+        function buildSidePortCandidates(bounds, side, towardPoint, referencePoint, sideRank) {
+            const candidateCoordinates = [];
+            const dedupe = new Set();
+
+            function pushCoordinate(value) {
+                const clamped = clampToSideRange(bounds, side, value);
+                const key = Math.round(clamped * 10) / 10;
+                if (dedupe.has(key)) {
+                    return;
+                }
+                dedupe.add(key);
+                candidateCoordinates.push(clamped);
+            }
+
+            if (side === 'e' || side === 'w') {
+                pushCoordinate(towardPoint.y);
+                if (referencePoint) {
+                    pushCoordinate(referencePoint.y);
+                }
+                const base = bounds.y;
+                for (const fraction of connectorPortSampleFractions) {
+                    pushCoordinate(base + bounds.height * fraction);
+                }
+            } else {
+                pushCoordinate(towardPoint.x);
+                if (referencePoint) {
+                    pushCoordinate(referencePoint.x);
+                }
+                const base = bounds.x;
+                for (const fraction of connectorPortSampleFractions) {
+                    pushCoordinate(base + bounds.width * fraction);
+                }
+            }
+
+            return candidateCoordinates.map(coordinate => createShapePort(bounds, side, coordinate, sideRank));
+        }
+
+        function getPreferredSides(fromBounds, toBounds) {
+            const fromCenter = getShapeCenter(fromBounds);
+            const toCenter = getShapeCenter(toBounds);
+            const dx = toCenter.x - fromCenter.x;
+            const dy = toCenter.y - fromCenter.y;
+
+            let ordered = [];
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                ordered = [
+                    dx >= 0 ? 'e' : 'w',
+                    dy >= 0 ? 's' : 'n',
+                    dy >= 0 ? 'n' : 's',
+                    dx >= 0 ? 'w' : 'e'
+                ];
+            } else {
+                ordered = [
+                    dy >= 0 ? 's' : 'n',
+                    dx >= 0 ? 'e' : 'w',
+                    dx >= 0 ? 'w' : 'e',
+                    dy >= 0 ? 'n' : 's'
+                ];
+            }
+
+            const uniqueSides = [];
+            for (const side of ordered) {
+                if (!uniqueSides.includes(side)) {
+                    uniqueSides.push(side);
+                }
+            }
+            return uniqueSides;
+        }
+
+        function buildPortPairCandidates(sourceBounds, targetBounds, sourceReferencePoint, targetReferencePoint) {
+            const sourceSides = getPreferredSides(sourceBounds, targetBounds);
+            const targetSides = getPreferredSides(targetBounds, sourceBounds);
+            const sourceTowardPoint = getShapeCenter(targetBounds);
+            const targetTowardPoint = getShapeCenter(sourceBounds);
+            const sourceRefSide = sourceReferencePoint ? getNearestSide(sourceBounds, sourceReferencePoint) : null;
+            const targetRefSide = targetReferencePoint ? getNearestSide(targetBounds, targetReferencePoint) : null;
+
+            const sourcePorts = [];
+            sourceSides.forEach((side, index) => {
+                const referencePoint = sourceRefSide === side ? sourceReferencePoint : null;
+                sourcePorts.push(...buildSidePortCandidates(sourceBounds, side, sourceTowardPoint, referencePoint, index));
+            });
+
+            const targetPorts = [];
+            targetSides.forEach((side, index) => {
+                const referencePoint = targetRefSide === side ? targetReferencePoint : null;
+                targetPorts.push(...buildSidePortCandidates(targetBounds, side, targetTowardPoint, referencePoint, index));
+            });
+
+            const scoredPairs = [];
+            for (const sourcePort of sourcePorts) {
+                for (const targetPort of targetPorts) {
+                    const baseDistance = Math.abs(sourcePort.outer.x - targetPort.outer.x) +
+                        Math.abs(sourcePort.outer.y - targetPort.outer.y);
+                    const sideRankPenalty = (sourcePort.sideRank + targetPort.sideRank) * 8;
+                    const score = baseDistance + sideRankPenalty;
+                    scoredPairs.push({
+                        score,
+                        sourcePort,
+                        targetPort
+                    });
+                }
+            }
+
+            scoredPairs.sort((a, b) => a.score - b.score);
+            const seen = new Set();
+            const pairs = [];
+            for (const candidate of scoredPairs) {
+                const key = `${candidate.sourcePort.side}:${Math.round(candidate.sourcePort.boundary.x * 10)},${Math.round(candidate.sourcePort.boundary.y * 10)}->${candidate.targetPort.side}:${Math.round(candidate.targetPort.boundary.x * 10)},${Math.round(candidate.targetPort.boundary.y * 10)}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                pairs.push({
+                    sourcePort: candidate.sourcePort,
+                    targetPort: candidate.targetPort
+                });
+                if (pairs.length >= maxPortPairCandidates) {
+                    break;
+                }
+            }
+
+            return pairs;
+        }
+
+        function resolveConnectorEndpoint(record, isSourceEndpoint) {
+            const endpointIndex = isSourceEndpoint ? 0 : (record.originalPoints.length - 1);
+            const basePoint = record.originalPoints[endpointIndex];
+            const shapeId = isSourceEndpoint ? record.sourceShapeId : record.targetShapeId;
+            if (!shapeId) {
+                return { x: basePoint.x, y: basePoint.y };
+            }
+            const shapeState = shapeStateById.get(shapeId);
+            if (!shapeState) {
+                return { x: basePoint.x, y: basePoint.y };
+            }
+            return mapConnectorPointFromShape(basePoint, shapeState);
+        }
+
+        function buildRoutingGrid(startPoint, endPoint, record, margin) {
+            const routeBounds = {
+                minX: Math.min(startPoint.x, endPoint.x) - margin,
+                minY: Math.min(startPoint.y, endPoint.y) - margin,
+                maxX: Math.max(startPoint.x, endPoint.x) + margin,
+                maxY: Math.max(startPoint.y, endPoint.y) + margin,
+                cols: 0,
+                rows: 0
+            };
+            routeBounds.cols = Math.max(2, Math.ceil((routeBounds.maxX - routeBounds.minX) / connectorRouteCellSize) + 1);
+            routeBounds.rows = Math.max(2, Math.ceil((routeBounds.maxY - routeBounds.minY) / connectorRouteCellSize) + 1);
+            if ((routeBounds.cols * routeBounds.rows) > maxRoutingGridCells) {
+                return null;
+            }
+
+            const grid = new pathfinding.Grid(routeBounds.cols, routeBounds.rows);
+
+            shapeStateById.forEach((shapeState, shapeId) => {
+                const bounds = shapeState.current;
+                const padding = (shapeId === record.sourceShapeId || shapeId === record.targetShapeId)
+                    ? 2
+                    : connectorRoutePadding;
+                const obstacleMinX = bounds.x - padding;
+                const obstacleMinY = bounds.y - padding;
+                const obstacleMaxX = bounds.x + bounds.width + padding;
+                const obstacleMaxY = bounds.y + bounds.height + padding;
+
+                if (obstacleMaxX < routeBounds.minX || obstacleMinX > routeBounds.maxX ||
+                    obstacleMaxY < routeBounds.minY || obstacleMinY > routeBounds.maxY) {
+                    return;
+                }
+
+                const startCol = clampGridIndex(Math.floor((obstacleMinX - routeBounds.minX) / connectorRouteCellSize), routeBounds.cols);
+                const endCol = clampGridIndex(Math.ceil((obstacleMaxX - routeBounds.minX) / connectorRouteCellSize), routeBounds.cols);
+                const startRow = clampGridIndex(Math.floor((obstacleMinY - routeBounds.minY) / connectorRouteCellSize), routeBounds.rows);
+                const endRow = clampGridIndex(Math.ceil((obstacleMaxY - routeBounds.minY) / connectorRouteCellSize), routeBounds.rows);
+
+                for (let row = startRow; row <= endRow; row += 1) {
+                    for (let col = startCol; col <= endCol; col += 1) {
+                        grid.setWalkableAt(col, row, false);
+                    }
+                }
+            });
+
+            return { grid, routeBounds };
+        }
+
+        function findGridRoute(record, startPoint, endPoint, startDirection, endDirection) {
+            let best = null;
+
+            for (const margin of connectorRouteAttemptMargins) {
+                const routingGrid = buildRoutingGrid(startPoint, endPoint, record, margin);
+                if (!routingGrid) {
+                    continue;
+                }
+
+                const { grid, routeBounds } = routingGrid;
+                const startCell = pointToGridCell(startPoint, routeBounds);
+                const endCell = pointToGridCell(endPoint, routeBounds);
+                markCellWalkable(grid, startCell, true);
+                markCellWalkable(grid, endCell, true);
+                markCellWalkable(grid, pointToGridCell(offsetPoint(startPoint, startDirection, connectorRouteCellSize), routeBounds), true);
+                markCellWalkable(grid, pointToGridCell(offsetPoint(endPoint, endDirection, connectorRouteCellSize), routeBounds), true);
+
+                const finder = new pathfinding.AStarFinder({
+                    allowDiagonal: false,
+                    dontCrossCorners: true,
+                    heuristic: pathfinding.Heuristic.manhattan
+                });
+                const path = finder.findPath(startCell.col, startCell.row, endCell.col, endCell.row, grid);
+                if (!path || path.length < 2) {
+                    continue;
+                }
+
+                const worldPath = path.map(([col, row]) => gridCellToPoint(col, row, routeBounds));
+                if (!worldPath.length) {
+                    continue;
+                }
+                worldPath[0] = { x: startPoint.x, y: startPoint.y };
+                worldPath[worldPath.length - 1] = { x: endPoint.x, y: endPoint.y };
+
+                const candidate = normalizeOrthogonalPath(worldPath);
+                if (candidate.length < 2) {
+                    continue;
+                }
+                const score = scorePath(candidate);
+                if (!best || score < best.score) {
+                    best = { points: candidate, score };
+                }
+            }
+
+            return best;
+        }
+
+        function routeConnectorPoints(record) {
+            if (!pathfinding || record.originalPoints.length < 2) {
+                return null;
+            }
+
+            const sourceShapeState = record.sourceShapeId ? shapeStateById.get(record.sourceShapeId) : null;
+            const targetShapeState = record.targetShapeId ? shapeStateById.get(record.targetShapeId) : null;
+
+            if (sourceShapeState && targetShapeState) {
+                const sourceReferencePoint = resolveConnectorEndpoint(record, true);
+                const targetReferencePoint = resolveConnectorEndpoint(record, false);
+                const portPairs = buildPortPairCandidates(
+                    sourceShapeState.current,
+                    targetShapeState.current,
+                    sourceReferencePoint,
+                    targetReferencePoint
+                );
+                let bestPath = null;
+
+                for (const pair of portPairs) {
+                    const routeResult = findGridRoute(
+                        record,
+                        pair.sourcePort.outer,
+                        pair.targetPort.outer,
+                        pair.sourcePort.side,
+                        pair.targetPort.side
+                    );
+
+                    if (!routeResult) {
+                        continue;
+                    }
+
+                    const withBoundaryPoints = normalizeOrthogonalPath([
+                        pair.sourcePort.boundary,
+                        ...routeResult.points,
+                        pair.targetPort.boundary
+                    ]);
+                    if (withBoundaryPoints.length < 2) {
+                        continue;
+                    }
+
+                    const score = scorePath(withBoundaryPoints);
+                    if (!bestPath || score < bestPath.score) {
+                        bestPath = { points: withBoundaryPoints, score };
+                    }
+                }
+
+                if (bestPath) {
+                    return bestPath.points;
+                }
+            }
+
+            const startPoint = resolveConnectorEndpoint(record, true);
+            const endPoint = resolveConnectorEndpoint(record, false);
+            const sourceAdjacentBase = record.originalPoints[Math.min(1, record.originalPoints.length - 1)];
+            const sourceDirection = getPrimaryDirection(record.originalPoints[0], sourceAdjacentBase);
+            const targetIndex = record.originalPoints.length - 1;
+            const targetAdjacentBase = record.originalPoints[Math.max(0, targetIndex - 1)];
+            const targetDirection = getOppositeDirection(getPrimaryDirection(targetAdjacentBase, record.originalPoints[targetIndex]));
+            const routeResult = findGridRoute(record, startPoint, endPoint, sourceDirection, targetDirection);
+            return routeResult ? routeResult.points : null;
+        }
+
+        function recomputeConnectorPointsFallback(record) {
             const nextPoints = record.originalPoints.map(point => ({ x: point.x, y: point.y }));
 
             if (record.sourceShapeId) {
@@ -746,6 +1326,17 @@
             }
 
             return nextPoints;
+        }
+
+        function recomputeConnectorPoints(record) {
+            if (pathfinding) {
+                const routedPoints = routeConnectorPoints(record);
+                if (routedPoints && routedPoints.length >= 2) {
+                    return routedPoints;
+                }
+            }
+
+            return recomputeConnectorPointsFallback(record);
         }
 
         function refreshConnectorsForShape(shapeId) {
